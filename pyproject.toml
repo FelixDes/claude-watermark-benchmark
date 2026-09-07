@@ -1,0 +1,15 @@
+[project]
+name = "claude-watermark-benchmark"
+version = "0.1.0"
+description = "Black-box detection of SynthID-Text watermarks: the Gloaguen et al. presence test, a reference implementation, and a field study on Claude"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "torch>=2.13",
+    "transformers>=5.16",
+    "accelerate>=1.0",
+    "numpy>=2.0",
+    "scipy>=1.14",
+    "anthropic>=1.2",
+    "scipy-stubs~=1.18.1",
+]
