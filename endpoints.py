@@ -637,3 +637,130 @@ class AnthropicBatchEndpoint(_AnthropicBase):
             if any(k in low for k in params):
                 return message
         return None
+
+
+# --------------------------------------------------------------------------
+# Google Gemini backend
+# --------------------------------------------------------------------------
+
+
+class GeminiEndpoint:
+    """A Gemini model over the Google GenAI API, sampled as a strict black box.
+
+    The positive-control candidate: Google is SynthID-Text's author and ships
+    it in the Gemini app; whether the API path carries it is what a run here
+    finds out. Same contract, same three concerns as the Anthropic backends:
+    sampling on (`temperature` is honoured here), thinking off
+    (`thinking_budget=0`; models that cannot go to zero keep their minimum and
+    say so), and a per-request nonce at the head of the system instruction.
+    """
+
+    supports_logits = False
+    cost_multiplier = 1.0
+
+    def __init__(self, model: str = "gemini-2.5-flash", temperature: float | None = 1.0,
+                 max_tokens: int = 64, concurrency: int = 8, nonce: bool = True,
+                 max_requests: int = 5000, client=None, system: str | None = None):
+        import os
+        from google import genai
+        from google.genai import types
+
+        self._types = types
+        self.name = model
+        self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.concurrency = concurrency
+        self.nonce = nonce
+        self.max_requests = max_requests
+        self.system_text = system or _SYSTEM
+        if client is None:
+            key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+            if not key:
+                raise RuntimeError("no Gemini credentials: export GOOGLE_API_KEY (or GEMINI_API_KEY)")
+            client = genai.Client(api_key=key)
+        self.client = client
+        self._thinking_off = True
+        self._lock = threading.Lock()
+        self.n_requests = 0
+        self.n_failed = 0
+        self.n_refused = 0
+        self._consecutive_failures = 0
+
+    def _system(self) -> str:
+        if not self.nonce:
+            return self.system_text
+        return f"[request-id: {secrets.token_hex(8)}]\n{self.system_text}"
+
+    def _config(self):
+        t = self._types
+        cfg = dict(system_instruction=self._system(), max_output_tokens=self.max_tokens,
+                   candidate_count=1)
+        if self.temperature is not None:
+            cfg["temperature"] = self.temperature
+        if self._thinking_off:
+            cfg["thinking_config"] = t.ThinkingConfig(thinking_budget=0)
+        return t.GenerateContentConfig(**cfg)
+
+    def _one(self, prompt: str) -> str | None:
+        with self._lock:
+            if self.n_requests >= self.max_requests:
+                return None
+            self.n_requests += 1
+        for attempt in range(6):
+            try:
+                resp = self.client.models.generate_content(
+                    model=self.model, contents=prompt, config=self._config())
+                break
+            except Exception as exc:  # google.genai.errors.APIError and friends
+                msg = str(exc).lower()
+                if self._thinking_off and "thinking" in msg:
+                    # Model cannot go to zero thinking; keep its minimum.
+                    self._thinking_off = False
+                    print("  note: this model rejects thinking_budget=0; leaving thinking at its minimum")
+                    continue
+                if any(k in msg for k in ("api key", "permission", "not found", "invalid argument")):
+                    raise
+                time.sleep(min(2 ** attempt, 30))  # 429 / 5xx
+        else:
+            with self._lock:
+                self.n_failed += 1
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= 25:
+                    raise RuntimeError("25 consecutive Gemini failures; aborting")
+            return None
+        with self._lock:
+            self._consecutive_failures = 0
+        cands = getattr(resp, "candidates", None) or []
+        finish = str(getattr(cands[0], "finish_reason", "")) if cands else "BLOCKED"
+        text = getattr(resp, "text", None)
+        if not text or "SAFETY" in finish or "BLOCK" in finish:
+            with self._lock:
+                self.n_failed += 1
+                self.n_refused += 1
+            return None
+        return text
+
+    def sample_texts(self, prompts: Sequence[str], n_samples: int) -> list[list[str]]:
+        jobs = [(i, p) for i, p in enumerate(prompts) for _ in range(n_samples)]
+        out: list[list[str]] = [[] for _ in prompts]
+        with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
+            for (i, _), text in zip(jobs, pool.map(lambda j: self._one(j[1]), jobs)):
+                if text is not None:
+                    out[i].append(text)
+        return out
+
+    def choice_probs(self, prompts, digits, H, words):
+        raise NotImplementedError("the API returns text only; run the test with --slow")
+
+    @classmethod
+    def estimate_cost(cls, model: str, n_requests: int, prompt_chars: int = 400,
+                      out_tokens: int | None = None) -> str:
+        rates = {"gemini-2.5-flash-lite": (0.10, 0.40), "gemini-2.5-flash": (0.30, 2.50),
+                 "gemini-2.5-pro": (1.25, 10.0)}
+        rate = next((v for k, v in rates.items() if model.startswith(k)), None)
+        if rate is None:
+            return f"{n_requests} requests (no cached rate for {model})"
+        tok_in = prompt_chars / 3.5 + 40
+        cost = n_requests * (tok_in * rate[0] + (out_tokens or 25) * rate[1]) / 1e6
+        return f"{n_requests} requests, ~${cost:.2f} at {model} list prices"

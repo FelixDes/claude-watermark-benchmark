@@ -12,5 +12,6 @@ dependencies = [
     "numpy>=2.0",
     "scipy>=1.14",
     "anthropic>=1.2",
+    "google-genai>=2.0",
     "scipy-stubs~=1.18.1",
 ]

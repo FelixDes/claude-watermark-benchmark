@@ -19,6 +19,7 @@ only.
 | `fableP1_` | Fable 5.1 | run P1, described | §3.2 |
 | `fableSync_` | Fable 5.1 | run S, sync API | §3.2 |
 | `fableB2_` | Fable 5.1 | run B2, 150-word preamble | §3.2 |
+| `fableW_` | Fable 5.1 | run W, nonsense-word contexts | §3.2 |
 | `fableM_`, `haikuM_` | Fable, Haiku | masking differential, `same` | §5 |
 | `fableMX_`, `haikuMX_` | Fable, Haiku | masking differential, `mixed` | §5 |
 

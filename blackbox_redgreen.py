@@ -66,6 +66,7 @@ from endpoints import (
     AnthropicBatchEndpoint,
     AnthropicEndpoint,
     Endpoint,
+    GeminiEndpoint,
     LocalHFEndpoint,
 )
 
@@ -109,12 +110,30 @@ DEGENERATE_TOP_SHARE = 0.9
 #:             words up to H deep and over tokens up to ~H + sum(ceil(k/3))
 #:             deep, and no n-gram window ever repeats, so repeated-context
 #:             masking cannot hit the choice position.
-T2_STYLES = ("digits", "words")
+#:   nonsense -- H pronounceable non-words fixed per digit. For a hash over
+#:             normalised *words* that drops numbers, digit runs are invisible
+#:             and every digit-based probe is blind; these are words to any
+#:             normaliser, carry no fruit semantics, and never repeat.
+T2_STYLES = ("digits", "words", "nonsense")
+
+NONSENSE = {
+    1: "zorp blen kwid tral vosk dreb",
+    2: "mivo dast rulk pheng tobi grask",
+    3: "quimb narf tesk voli brund ospe",
+    4: "flimp gora tazz nuvel prok wemsi",
+    5: "darbo yelk strun pavi klomb resh",
+    6: "ubbet kazlo trisp mordu felp gani",
+    7: "sorvin plek dumo waskel jint orba",
+    8: "nefra tulb kreno vipp salju dromb",
+    9: "yavil bosk prund telm ochiv zelk",
+}
 
 
 def t2_string(d, H: int, style: str = "digits") -> str:
     if style == "words":
         return " ".join(str(d) * k for k in range(1, H + 1))
+    if style == "nonsense":
+        return " ".join(NONSENSE[int(d)].split()[:H])
     return str(d) * H
 
 
@@ -777,9 +796,10 @@ def use_fast_path(ep: Endpoint, args) -> bool:
 
 def build_endpoints(args) -> list[tuple[Endpoint, str, str]]:
     """(endpoint, label, cache tag) triples for this run."""
-    if args.endpoint in ("anthropic", "anthropic-batch"):
+    if args.endpoint in ("anthropic", "anthropic-batch", "gemini"):
         batch = args.endpoint == "anthropic-batch"
-        cls = AnthropicBatchEndpoint if batch else AnthropicEndpoint
+        cls = (GeminiEndpoint if args.endpoint == "gemini"
+               else AnthropicBatchEndpoint if batch else AnthropicEndpoint)
 
         # Budget first, credentials second: the cost preview is the thing worth
         # seeing before you go find a key, not after.
@@ -871,11 +891,11 @@ def build_endpoints(args) -> list[tuple[Endpoint, str, str]]:
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--endpoint",
-                    choices=("local", "anthropic", "anthropic-batch"),
+                    choices=("local", "anthropic", "anthropic-batch", "gemini"),
                     default="local")
     ap.add_argument("--model", default=DEFAULT_MODEL, help="local HF model id")
-    ap.add_argument("--api-model", default="claude-haiku-4-5",
-                    help="Claude model id when --endpoint anthropic")
+    ap.add_argument("--api-model", default=None,
+                    help="hosted model id (default: claude-haiku-4-5 / gemini-2.5-flash)")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--context", type=int, default=NGRAM_LEN - 1,
                     help="H, the probed context size; must equal h for SynthID")
@@ -937,6 +957,8 @@ def main():
                     help="cache/reuse the collected probability matrices under this prefix")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
+    if args.api_model is None:
+        args.api_model = "gemini-2.5-flash" if args.endpoint == "gemini" else "claude-haiku-4-5"
 
     np.random.seed(args.seed)
     global PREAMBLE_WORDS

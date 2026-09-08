@@ -11,17 +11,17 @@ applied to Claude's production SynthID deployment.
 - Seeding SynthID's repeated-context history with the prompt leaves the
   watermark active and the test blind (S = 1, p = 1.0). Reproduced locally.
 - On `claude-fable-5-1`, the only Claude model Anthropic states is watermarked
-  on the API: nothing across 8 configurations, ~12 000 responses — both
-  transports, contexts ≤ 15 tokens / 6 words, spelled or constructed context,
-  with/without a 150-word paragraph before the probe. Haiku 4.5 (transition
+  on the API: nothing across 9 configurations, ~12 600 responses — both
+  transports, digit and word contexts ≤ 15 tokens / 6 words, spelled or
+  constructed context, with/without a 150-word paragraph before the probe. Haiku 4.5 (transition
   period) equally null.
 - Two redesigns fix one assumption and break on another: a described context
   gives digit-semantics false positives on small models; a within-response
   "masking differential" is correct on three local ground truths and confounded
   on Claude, where the unwatermarked control fires as hard as the watermarked
   model.
-- Open: hash excluding digits, per-request key, context wider than the local
-  window, or watermark not live on this route. A detection-API check on our
+- Open: per-request key, context wider than the local window, or watermark
+  not live on this route. A detection-API check on our
   own responses would settle it.
 
 ## Contents
@@ -29,7 +29,7 @@ applied to Claude's production SynthID deployment.
 | file | what |
 |---|---|
 | `blackbox_redgreen.py` | presence test, context sweep, Alg. 1 estimator, three probes, CLI |
-| `endpoints.py` | one sampling contract; backends: local `transformers`, Anthropic sync, Anthropic batch |
+| `endpoints.py` | one sampling contract; backends: local `transformers`, Anthropic sync, Anthropic batch, Gemini |
 | `watermarks.py` | `PromptAwareSynthIDProcessor`: SynthID with prompt-seeded repeated-context history |
 | `synthid_demo.py` | SynthID generation + mean-g-value text detector |
 | `test_blackbox.py` | offline tests on fake clients (`python test_blackbox.py`) |
@@ -40,7 +40,7 @@ applied to Claude's production SynthID deployment.
 ```bash
 uv sync                      # torch 2.13+cu130, transformers 5.16, scipy, anthropic; Python 3.14
 python test_blackbox.py      # no GPU, no credentials
-export ANTHROPIC_API_KEY=... # hosted runs
+export ANTHROPIC_API_KEY=... # hosted runs; GOOGLE_API_KEY for --endpoint gemini
 ```
 
 Local runs: RTX 5070, 12 GB. `--batch-size` bounds the SynthID
@@ -86,7 +86,8 @@ a standalone space on each side, so the window is `[ ][ddd]…[partial][ ] <word
 Hence on Claude `h = 1` is invisible, `H = 1–6` covers `h ≤ 4`, `H = 7–15`
 covers `h ≤ 7`, masking never hits the choice, and `h` reads from the bottom
 of the detected band. `--t2-style words` (`3 33 333 …`) covers word-level
-hashes up to `H` words with no repeating window.
+hashes up to `H` words with no repeating window; `--t2-style nonsense`
+(`zorp blen kwid tral`, fixed per digit) uses no digits at all.
 
 **Recovering `h`.** `--sweep-context 2-6` (word list picked once) or
 `--estimate-context` (Alg. 1, Mood test; ±1 noisy, expensive).
@@ -145,6 +146,7 @@ p99 ≥ 0.64 at every `H`. Null for `2 ≤ h ≤ 7`.
 | P1 | described | batch | constructed | apples | 12 | ≤ 8 | 0 | 1.00 | null; 76 refusals |
 | S | echo | sync | spelled | peaches | 12 | 5 | 1 | 1.00 | null |
 | B2 | echo + 150-word paragraph, `max_tokens` 1024 | batch | spelled | peaches | 12 | 6 | 1 | 1.00 | null; 0.84 bits/cell |
+| W | echo | batch | four nonsense *words* (`zorp blen kwid tral`) | peaches | 4 w | ≤ 8 | 2 | 0.54 | null; 82 refusals; 0.85 bits/cell |
 
 Context intact before the chosen word in 100% of parsed responses. Fable's
 per-cell entropy is lower than marginals suggest (top share 0.73–0.82 vs 0.65
@@ -162,7 +164,7 @@ best; S and B2 use it.
 | batch path not watermarked | rejected | S |
 | length gate ≤ ~200 tokens / small-`max_tokens` gate | rejected | B2 |
 | entropy / sample size | addressed | list search; decisive locally at same `n` |
-| hash excludes digits | open | word-token contexts, not run |
+| hash excludes digits (word contexts ≤ 4 words / ~10 tokens) | rejected | W |
 | per-request key | open | within-response designs confounded (§5) |
 | context wider than local window | open | — |
 | not live on this route | open | detection API only |

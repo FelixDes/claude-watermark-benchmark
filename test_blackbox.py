@@ -259,6 +259,24 @@ def test_masking_statistic_is_zero_when_types_agree():
     assert bb.masking_statistic(diff) > 20
 
 
+def test_gemini_endpoint_contract():
+    from endpoints import GeminiEndpoint
+    calls = []
+    class Models:
+        def generate_content(self, *, model, contents, config):
+            calls.append(config)
+            cand = types.SimpleNamespace(finish_reason="STOP")
+            return types.SimpleNamespace(text=answer(contents, WORDS, 4), candidates=[cand])
+    ep = GeminiEndpoint(client=types.SimpleNamespace(models=Models()), concurrency=2)
+    prompts = [bb.build_prompt("I ate", "3333", WORDS, "strawberries")]
+    out = ep.sample_texts(prompts, 5)
+    assert len(out[0]) == 5 and all("I ate 3333" in t for t in out[0])
+    cfg = calls[0]
+    assert cfg.temperature == 1.0 and cfg.max_output_tokens == 64
+    assert cfg.thinking_config.thinking_budget == 0
+    assert cfg.system_instruction.startswith("[request-id:")
+
+
 def test_thinking_always_on_models_get_low_effort_and_no_sampling_params():
     class Probe:
         def __init__(self): self.seen = {}
